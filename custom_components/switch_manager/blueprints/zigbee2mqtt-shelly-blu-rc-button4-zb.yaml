@@ -1,0 +1,120 @@
+name: Shelly BLU RC Button 4 ZB (SBBT-104CUS)
+service: Zigbee2MQTT
+event_type: mqtt
+mqtt_topic_format: zigbee2mqtt/+/action
+info: |
+    Shelly BLU RC Button 4 ZB (SBBT-104CUS), the Zigbee version of the BLU RC Button 4.
+    Buttons are numbered 1 to 4 from top (one dot) to bottom (four dots).
+
+    hold is sent repeatedly while the button is held, and the device sends 1_single_long etc.
+    when it is released, which is used for hold (released). Turn on Repeat until release on
+    hold for hold-to-dim.
+
+    press 2x, press 3x and hold (released) need Zigbee2MQTT 2.9.2 or newer. After updating,
+    reconfigure the device in Zigbee2MQTT (press a button to wake it up first), otherwise
+    these events are not received.
+    In toggle mode (4 endpoints) the device sends no hold events, only press.
+
+    Not tested on a real device yet; the payloads come from the Zigbee2MQTT converter and
+    the Shelly API docs. Please report back if something doesn't match.
+buttons:
+  - x: 0
+    y: 0
+    width: 257
+    height: 125
+    actions:
+      - title: press
+        conditions:
+          - key: payload
+            value: 1_single
+      - title: press 2x
+        conditions:
+          - key: payload
+            value: 1_double
+      - title: press 3x
+        conditions:
+          - key: payload
+            value: 1_triple
+      - title: hold
+        conditions:
+          - key: payload
+            value: 1_hold
+      - title: hold (released)
+        conditions:
+          - key: payload
+            value: 1_single_long
+  - x: 0
+    y: 125
+    width: 257
+    height: 124
+    actions:
+      - title: press
+        conditions:
+          - key: payload
+            value: 2_single
+      - title: press 2x
+        conditions:
+          - key: payload
+            value: 2_double
+      - title: press 3x
+        conditions:
+          - key: payload
+            value: 2_triple
+      - title: hold
+        conditions:
+          - key: payload
+            value: 2_hold
+      - title: hold (released)
+        conditions:
+          - key: payload
+            value: 2_single_long
+  - x: 0
+    y: 249
+    width: 257
+    height: 125
+    actions:
+      - title: press
+        conditions:
+          - key: payload
+            value: 3_single
+      - title: press 2x
+        conditions:
+          - key: payload
+            value: 3_double
+      - title: press 3x
+        conditions:
+          - key: payload
+            value: 3_triple
+      - title: hold
+        conditions:
+          - key: payload
+            value: 3_hold
+      - title: hold (released)
+        conditions:
+          - key: payload
+            value: 3_single_long
+  - x: 0
+    y: 374
+    width: 257
+    height: 126
+    actions:
+      - title: press
+        conditions:
+          - key: payload
+            value: 4_single
+      - title: press 2x
+        conditions:
+          - key: payload
+            value: 4_double
+      - title: press 3x
+        conditions:
+          - key: payload
+            value: 4_triple
+      - title: hold
+        conditions:
+          - key: payload
+            value: 4_hold
+      - title: hold (released)
+        conditions:
+          - key: payload
+            value: 4_single_long

@@ -1,0 +1,14 @@
+input_boolean:
+  guest_mode:
+    name: "Guest mode"
+    icon: mdi:account-multiple-check
+
+  heater_paused_by_automation:
+    name: "Heater paused by automation"
+    icon: mdi:pause-circle
+
+timer:
+  guest_mode:
+    name: "Guest mode"
+    icon: mdi:account-multiple-check
+    duration: "24:00:00"

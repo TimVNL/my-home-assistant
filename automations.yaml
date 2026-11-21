@@ -1,0 +1,411 @@
+- id: door_open_notification
+  alias: NOTIFY | Doors Open
+  description: Notifies the phone when a door has been open for 30 seconds
+  triggers:
+  - trigger: state
+    entity_id:
+    - binary_sensor.external_doors
+    to:
+    - 'on'
+    for:
+      seconds: 30
+  conditions: []
+  actions:
+  - action: notify.mobile_app_timv_pixel10
+    data:
+      title: "\U0001F6AA Door open"
+      message: "{%- set open_doors = expand('binary_sensor.external_doors')\n  | selectattr('state',
+        'eq', 'on')\n  | map(attribute='name') | list -%}\n{%- if open_doors | count
+        == 1 -%} {{ open_doors[0] }} is open. {%- else -%} Open doors: {{ open_doors
+        | join(', ') }}. {%- endif -%}"
+  mode: single
+- id: away_with_devices_on
+  alias: AWAY | Notify Doors and Lights
+  description: Notifies the phone when the last person leaves and lights are on or
+    a door is open, turns those lights and the heater off, and restores the heater
+    when someone arrives home
+  triggers:
+  - trigger: state
+    entity_id: zone.home
+    to: '0'
+    for:
+      minutes: 2
+    id: leave
+  - trigger: state
+    entity_id: zone.home
+    from: '0'
+    to: '1'
+    id: arrive
+  conditions: []
+  actions:
+  - choose:
+    - conditions:
+      - condition: trigger
+        id: leave
+      - condition: state
+        entity_id: input_boolean.guest_mode
+        state: 'off'
+      sequence:
+      - if:
+        - condition: not
+          conditions:
+          - condition: state
+            entity_id: climate.living_room_heater
+            state:
+            - 'off'
+            - unavailable
+            - unknown
+        then:
+        - action: input_boolean.turn_on
+          target:
+            entity_id: input_boolean.heater_paused_by_automation
+        - action: climate.turn_off
+          target:
+            entity_id: climate.living_room_heater
+      - if:
+        - condition: template
+          value_template: '{{ states.light | selectattr(''state'', ''eq'', ''on'')
+            | list | count > 0 or is_state(''binary_sensor.external_doors'', ''on'')
+            }}'
+        then:
+        - action: notify.mobile_app_timv_pixel10
+          data:
+            title: "\U0001F3C3 Away with things left on"
+            message: "{%- set lights_on = states.light\n  | selectattr('state', 'eq',
+              'on')\n  | rejectattr('attributes.group_entities', 'defined')\n  | map(attribute='name')
+              | list -%}\n{%- set doors_open = expand('binary_sensor.external_doors')\n
+              \ | selectattr('state', 'eq', 'on')\n  | map(attribute='name') | list
+              -%}\n{%- if lights_on %} The following lights are still on: {{ lights_on
+              | join(', ') }}. {%- endif %} {%- if doors_open %} The following doors
+              are still open: {{ doors_open | join(', ') }}. {%- endif %} {%- if lights_on
+              %} These lights will be turned off. {%- endif %}"
+            data:
+              color: '#F44336'
+        - action: light.turn_off
+          metadata: {}
+          target:
+            area_id:
+            - living_room
+            - bedroom
+            - office
+          data:
+            transition: 3
+    - conditions:
+      - condition: trigger
+        id: arrive
+      - condition: state
+        entity_id: input_boolean.heater_paused_by_automation
+        state: 'on'
+      sequence:
+      - action: climate.turn_on
+        target:
+          entity_id: climate.living_room_heater
+      - action: input_boolean.turn_off
+        target:
+          entity_id: input_boolean.heater_paused_by_automation
+  mode: single
+- id: washing_machine_done_notification
+  alias: NOTIFY | Washing machine done
+  description: Notifies the phone when the washing machine finishes its cycle
+  triggers:
+  - trigger: state
+    entity_id:
+    - sensor.bathroom_washer_progress
+    to:
+    - finish
+  conditions: []
+  actions:
+  - action: notify.mobile_app_timv_pixel10
+    data:
+      title: "\U0001F9FA Washing machine done"
+      message: The washing machine has finished
+  mode: single
+- id: alarm_wake_up_light
+  alias: BEDROOM | Alarm Wake-up light
+  description: Ramps the bedside light starting 15 minutes before the phone's next
+    alarm on workdays
+  triggers:
+  - trigger: time
+    at:
+      entity_id: sensor.timv_pixel10_next_alarm
+      offset: -00:15:00
+  conditions:
+  - condition: state
+    entity_id: person.timv
+    state: home
+  - condition: state
+    entity_id: light.bedroom_bedside
+    state: 'off'
+  actions:
+  - action: light.turn_on
+    target:
+      entity_id: light.bedroom_bedside
+    data:
+      brightness_pct: 1
+      color_temp_kelvin: 2202
+  - repeat:
+      count: 24
+      sequence:
+      - delay:
+          minutes: 1
+      - if:
+        - condition: state
+          entity_id: light.bedroom_bedside
+          state: 'off'
+        then:
+        - stop: Bedside light was turned off during the ramp
+      - action: light.turn_on
+        target:
+          entity_id: light.bedroom_bedside
+        data:
+          brightness_pct: '{{ (1 + repeat.index * 2.5) | round(0) | int }}'
+          color_temp_kelvin: '{{ 2202 + repeat.index * 54 }}'
+          transition: 3
+  mode: single
+- id: '1793476885653'
+  alias: NOTIFY | Battery sensors are below 15%
+  description: ''
+  use_blueprint:
+    path: community/battery_low_notification.yaml
+    input:
+      threshold: 15
+      time: 05:00:00
+      exclude:
+        entity_id:
+        - sensor.timv_pixel10_battery_level
+      actions:
+      - action: notify.mobile_app_timv_pixel10
+        metadata: {}
+        data:
+          message: The battery of the sensor(s) {{sensors}} is low
+- id: arrive_home_lights_after_dark
+  alias: LIVING | Lights on when arriving after dark
+  description: Turns the living room lights on at 40% when the first person arrives
+    home after sunset
+  triggers:
+  - trigger: state
+    entity_id: zone.home
+    from: '0'
+    to: '1'
+  conditions:
+  - condition: state
+    entity_id: sun.sun
+    state: below_horizon
+  - condition: state
+    entity_id: light.living_lights
+    state: 'off'
+  actions:
+  - action: light.turn_on
+    target:
+      entity_id: light.living_lights
+    data:
+      color_temp_kelvin: 2000
+      transition: 3
+      brightness_pct: 75
+  mode: single
+- id: notify_backup_overdue
+  alias: NOTIFY | Backup is overdue
+  description: Warns when the weekly automatic backup has not succeeded within 7 days
+    and 6 hours
+  variables:
+    expected_interval_days: 7
+    grace_hours: 6
+  triggers:
+  - trigger: time
+    at: 09:00:00
+  conditions:
+  - condition: template
+    value_template: '{% set t = states(''sensor.backup_last_successful_automatic_backup'')
+      %} {{ t in [''unknown'', ''unavailable'', ''none''] or t | as_datetime is none
+      or (now() - (t | as_datetime)).total_seconds() > (expected_interval_days * 24
+      + grace_hours) * 3600 }}'
+  actions:
+  - action: notify.mobile_app_timv_pixel10
+    data:
+      title: "\U0001F6DF Backup overdue"
+      message: '{% set t = states(''sensor.backup_last_successful_automatic_backup'')
+        %} {% if t in [''unknown'', ''unavailable'', ''none''] %} No successful automatic
+        backup is recorded. {% else %} Last successful backup was {{ relative_time(t
+        | as_datetime) }} ago, over the {{ expected_interval_days }} day limit. {%
+        endif %}'
+  mode: single
+- id: notify_zigbee_bridge_offline
+  alias: NOTIFY | Zigbee2MQTT offline
+  description: Notifies when the Zigbee2MQTT bridge has been disconnected for 5 minutes
+  triggers:
+  - trigger: state
+    entity_id: binary_sensor.zigbee2mqtt_bridge_connection_state
+    to: 'off'
+    for:
+      minutes: 5
+  conditions: []
+  actions:
+  - action: notify.mobile_app_timv_pixel10
+    data:
+      title: "\U0001F4E1 Zigbee2MQTT offline"
+      message: The Zigbee2MQTT bridge has been disconnected for 5 minutes. Zigbee
+        devices will not respond.
+  mode: single
+- id: guest_mode
+  alias: ALL | Guest mode
+  description: Starts the 24 hour guest mode timer and notifies when guest mode is
+    turned on, cancels the timer when turned off, and turns guest mode off when the
+    timer finishes
+  triggers:
+  - trigger: state
+    entity_id: input_boolean.guest_mode
+    from: 'off'
+    to: 'on'
+    id: mode_on
+  - trigger: state
+    entity_id: input_boolean.guest_mode
+    to: 'off'
+    id: mode_off
+  - trigger: homeassistant
+    event: start
+  - trigger: event
+    event_type: timer.finished
+    event_data:
+      entity_id: timer.guest_mode
+    id: timer_finished
+  conditions: []
+  actions:
+  - choose:
+    - conditions:
+      - condition: trigger
+        id: timer_finished
+      sequence:
+      - action: input_boolean.turn_off
+        target:
+          entity_id: input_boolean.guest_mode
+      - action: notify.mobile_app_timv_pixel10
+        data:
+          title: "\U0001F465 Guest mode ended"
+          message: Guest mode was turned off after 24 hours. Away automations are
+            active again.
+    - conditions:
+      - condition: trigger
+        id: mode_on
+      sequence:
+      - action: timer.start
+        target:
+          entity_id: timer.guest_mode
+      - action: notify.mobile_app_timv_pixel10
+        data:
+          title: "\U0001F465 Guest mode on"
+          message: Guest mode was turned on. Away automations are paused for 24 hours.
+    - conditions:
+      - condition: trigger
+        id: mode_off
+      sequence:
+      - action: timer.cancel
+        target:
+          entity_id: timer.guest_mode
+    default:
+    - if:
+      - condition: state
+        entity_id: input_boolean.guest_mode
+        state: 'on'
+      then:
+      - action: timer.start
+        target:
+          entity_id: timer.guest_mode
+      else:
+      - action: timer.cancel
+        target:
+          entity_id: timer.guest_mode
+  mode: single
+- id: hallway_vac_charger_auto_off
+  alias: HALLWAY | Vacuum charger auto-off
+  description: Turns the hallway vacuum charger plug off 4 hours after it is turned
+    on and notifies the phone
+  triggers:
+  - trigger: state
+    entity_id: switch.hallway_vac
+    to: 'on'
+    for:
+      hours: 4
+  conditions: []
+  actions:
+  - action: switch.turn_off
+    target:
+      entity_id: switch.hallway_vac
+  - action: notify.mobile_app_timv_pixel10
+    data:
+      title: "\U0001F50C Vacuum charger off"
+      message: The hallway vacuum charger has been on for 4 hours and was switched
+        off.
+  mode: single
+- id: living_heater_door_pause
+  alias: LIVING | Heater pause on open door
+  description: Turns the heater off while the garden door has been open for 2 minutes
+    and turns it back on when the door closes and someone is home
+  triggers:
+  - trigger: state
+    entity_id: binary_sensor.garden_door_contact
+    to: 'on'
+    for:
+      minutes: 2
+    id: door_open
+  - trigger: state
+    entity_id: binary_sensor.garden_door_contact
+    to: 'off'
+    id: door_closed
+  conditions: []
+  actions:
+  - choose:
+    - conditions:
+      - condition: trigger
+        id: door_open
+      - condition: not
+        conditions:
+        - condition: state
+          entity_id: climate.living_room_heater
+          state:
+          - 'off'
+          - unavailable
+          - unknown
+      sequence:
+      - action: input_boolean.turn_on
+        target:
+          entity_id: input_boolean.heater_paused_by_automation
+      - action: climate.turn_off
+        target:
+          entity_id: climate.living_room_heater
+    - conditions:
+      - condition: trigger
+        id: door_closed
+      - condition: state
+        entity_id: input_boolean.heater_paused_by_automation
+        state: 'on'
+      - condition: or
+        conditions:
+        - condition: not
+          conditions:
+          - condition: state
+            entity_id: zone.home
+            state: '0'
+        - condition: state
+          entity_id: input_boolean.guest_mode
+          state: 'on'
+      sequence:
+      - action: climate.turn_on
+        target:
+          entity_id: climate.living_room_heater
+      - action: input_boolean.turn_off
+        target:
+          entity_id: input_boolean.heater_paused_by_automation
+  mode: single
+- id: lets_encrypt_certificate_renewal
+  alias: SYSTEM | Renew Let's Encrypt certificate
+  description: Restart the Let's Encrypt add-on nightly so it checks and renews the
+    certificate when due.
+  triggers:
+  - at: 03:30:00
+    trigger: time
+  conditions: []
+  actions:
+  - action: hassio.addon_restart
+    data:
+      addon: core_letsencrypt
+  mode: single

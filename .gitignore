@@ -1,0 +1,46 @@
+# Secrets — never commit real values
+secrets.yaml
+secret.yaml
+*.secrets.yaml
+secrets.*.yaml
+
+# Home Assistant runtime state, databases and logs
+.storage/
+.cloud/
+deps/
+tts/
+.cache/
+image/
+home-assistant_v2.db*
+zigbee.db*
+home-assistant.log*
+*.log
+.ha_run.lock
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+
+# Zigbee2MQTT runtime data (configuration.yaml and its local secret.yaml are
+# handled separately: configuration.yaml is committed, secret.yaml is ignored)
+zigbee2mqtt/database.db*
+zigbee2mqtt/log/
+zigbee2mqtt/state.json
+zigbee2mqtt/coordinator_backup.json
+
+# TLS material and network bans
+ssl/
+ha_ssl/
+ip_bans.yaml
+
+# Editor/tool artifacts and backups
+.opencode/
+.opencode_agents_md.sha256
+.opencode-safe-write-backups/
+opencode/
+*.bak
+*.tmp
+
+# OS cruft
+.DS_Store
+Thumbs.db

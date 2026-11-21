@@ -1,0 +1,292 @@
+"""Climate platform for Philips Heater."""
+
+from __future__ import annotations
+
+import logging
+from typing import Any
+
+from homeassistant.components.climate import (
+    SWING_OFF,
+    SWING_ON,
+    ClimateEntity,
+    ClimateEntityFeature,
+    HVACAction,
+    HVACMode,
+)
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import (
+    ATTR_TEMPERATURE,
+    CONF_HOST,
+    PRECISION_WHOLE,
+    UnitOfTemperature,
+)
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers.entity import DeviceInfo
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
+
+from .const import (
+    CONF_AUTO_PLUS_OFFSET,
+    CONF_DEFAULT_HEAT_PRESET,
+    DEFAULT_AUTO_PLUS_OFFSET,
+    DEFAULT_HEAT_PRESET,
+    DOMAIN,
+    HEATING_ACTION_MAP,
+    MAX_TEMP,
+    MIN_TEMP,
+    PhilipsApi,
+    PRESET_AUTO,
+    PRESET_AUTO_PLUS,
+    PRESET_FAN,
+    PRESET_HIGH,
+    PRESET_LOW,
+    PRESET_MEDIUM,
+    PRESET_MODES,
+    TARGET_TEMP_STEP,
+)
+
+_LOGGER = logging.getLogger(__name__)
+
+
+async def async_setup_entry(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    async_add_entities: AddEntitiesCallback,
+) -> None:
+    """Set up Philips Heater climate from config entry."""
+
+    coordinator = hass.data[DOMAIN][entry.entry_id]
+    host = entry.data[CONF_HOST]
+    name = entry.data.get("name", f"Philips Heater {host}")
+    model = coordinator.status.get(PhilipsApi.MODEL_ID) or entry.data.get("model", "Unknown")
+    device_id = entry.data.get("device_id", entry.entry_id)
+
+    async_add_entities([PhilipsHeaterClimate(coordinator, entry, host, name, model, device_id)])
+
+
+class PhilipsHeaterClimate(ClimateEntity):
+    """Representation of a Philips Heater climate device."""
+
+    _attr_temperature_unit = UnitOfTemperature.CELSIUS
+    _attr_precision = PRECISION_WHOLE
+    _attr_hvac_modes = [HVACMode.OFF, HVACMode.HEAT, HVACMode.AUTO, HVACMode.FAN_ONLY]
+    _attr_target_temperature_step = TARGET_TEMP_STEP
+    _attr_min_temp = MIN_TEMP
+    _attr_max_temp = MAX_TEMP
+    _attr_supported_features = (
+        ClimateEntityFeature.TARGET_TEMPERATURE
+        | ClimateEntityFeature.PRESET_MODE
+        | ClimateEntityFeature.TURN_ON
+        | ClimateEntityFeature.TURN_OFF
+        | ClimateEntityFeature.SWING_MODE
+    )
+    _attr_swing_modes = [SWING_ON, SWING_OFF]
+    _attr_has_entity_name = True
+    _attr_name = None  # Use device name
+
+    def __init__(self, coordinator, entry: ConfigEntry, host: str, device_name: str, model: str, device_id: str) -> None:
+        """Initialize the climate device."""
+        self._coordinator = coordinator
+        self._entry = entry
+        self._host = host
+        self._model = model
+        self._device_id = device_id
+        self._attr_unique_id = f"{device_id}_climate"
+        self._remove_listener = None
+
+        self._model_config = coordinator.model_config
+        self._attr_preset_modes = [PRESET_LOW, PRESET_MEDIUM, PRESET_HIGH, PRESET_AUTO, PRESET_FAN, PRESET_AUTO_PLUS]
+        if not self._model_config["supports_medium_heat"]:
+            self._attr_preset_modes.remove(PRESET_MEDIUM)
+
+        # Get device status for version info
+        status = coordinator.status
+
+        # Device info for device registry
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, device_id)},
+            name=device_name,
+            manufacturer="Philips",
+            model=model,
+            sw_version=status.get(PhilipsApi.SOFTWARE_VERSION),
+            configuration_url=f"http://{host}",
+        )
+
+    async def async_added_to_hass(self) -> None:
+        """When entity is added to hass."""
+        self._remove_listener = self._coordinator.async_add_listener(self._handle_coordinator_update)
+
+    async def async_will_remove_from_hass(self) -> None:
+        """When entity is removed from hass."""
+        if self._remove_listener:
+            self._remove_listener()
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        """Handle updated data from the coordinator."""
+        self.async_write_ha_state()
+
+    @property
+    def available(self) -> bool:
+        """Return if entity is available."""
+        return self._coordinator.available
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return entity specific state attributes."""
+        status = self._coordinator.status
+        attrs = {
+            "operating_mode": status.get(PhilipsApi.OPERATING_MODE, 0),
+            "heating_status_code": status.get(PhilipsApi.HEATING_STATUS, 0),
+        }
+
+        # Add fan speed if available
+        if (fan_speed := status.get(PhilipsApi.FAN_SPEED)) is not None:
+            attrs["fan_speed"] = fan_speed
+
+        return attrs
+
+    @property
+    def current_temperature(self) -> float | None:
+        """Return the current temperature."""
+        status = self._coordinator.status
+        temp = status.get(PhilipsApi.TEMPERATURE)
+        if temp is not None:
+            return int(temp / 10)  # Match the Philips app, which drops tenths
+        return None
+
+    @property
+    def target_temperature(self) -> int | None:
+        """Return the target temperature - only applicable in AUTO mode."""
+        if self.hvac_mode != HVACMode.AUTO:
+            return None
+
+        status = self._coordinator.status
+        return status.get(PhilipsApi.TARGET_TEMP)
+
+    @property
+    def hvac_mode(self) -> HVACMode:
+        """Return current HVAC mode."""
+        if not self.is_on:
+            return HVACMode.OFF
+
+        status = self._coordinator.status
+        operating_mode = status.get(PhilipsApi.OPERATING_MODE, 0)
+        heating_status = status.get(PhilipsApi.HEATING_STATUS, 0)
+
+        # Determine mode from OPERATING_MODE and HEATING_STATUS
+        # If heating_status is -16 (auto idle) or operating_mode is 0, we're in AUTO
+        if operating_mode == 0 or heating_status == -16:
+            return HVACMode.AUTO
+        # If operating_mode is -127 or heating_status is 0 (and not auto), we're in FAN_ONLY
+        elif operating_mode == -127 or (heating_status == 0 and operating_mode != 0):
+            return HVACMode.FAN_ONLY
+        # Otherwise manual heating (65=high, 66=low)
+        else:
+            return HVACMode.HEAT
+
+    @property
+    def hvac_action(self) -> HVACAction | None:
+        """Return current HVAC action."""
+        if not self.is_on:
+            return HVACAction.OFF
+
+        status = self._coordinator.status
+        intensity = status.get(PhilipsApi.HEATING_STATUS, 0)
+        return HEATING_ACTION_MAP.get(intensity, HVACAction.IDLE)
+
+    @property
+    def preset_mode(self) -> str | None:
+        """Return current preset mode."""
+        if not self.is_on:
+            return None
+
+        status = self._coordinator.status
+        mode = status.get(PhilipsApi.OPERATING_MODE, 66)
+
+        # Map OPERATING_MODE to preset
+        if mode == 0:
+            return PRESET_AUTO
+        elif mode == 65:
+            return PRESET_HIGH
+        elif mode == 66:
+            return PRESET_LOW
+        elif mode == 67:
+            return PRESET_MEDIUM
+        elif mode == -127:
+            return PRESET_FAN
+        return None
+
+    @property
+    def swing_mode(self) -> str:
+        """Return swing mode."""
+        status = self._coordinator.status
+        osc = status.get(PhilipsApi.OSCILLATION, 0)
+        return SWING_ON if osc in (self._model_config["oscillation_on"], self._model_config["oscillation_status"]) else SWING_OFF
+
+    @property
+    def is_on(self) -> bool:
+        """Return True if device is on."""
+        status = self._coordinator.status
+        return status.get(PhilipsApi.POWER) == 1
+
+    async def async_set_temperature(self, **kwargs: Any) -> None:
+        """Set new target temperature."""
+        if (temp := kwargs.get(ATTR_TEMPERATURE)) is None:
+            return
+
+        temp = int(temp)
+        temp = max(self._attr_min_temp, min(temp, self._attr_max_temp))
+
+        await self._coordinator.async_set_control_values({PhilipsApi.TARGET_TEMP: temp})
+
+    async def async_set_hvac_mode(self, hvac_mode: HVACMode) -> None:
+        """Set HVAC mode."""
+        if hvac_mode == HVACMode.OFF:
+            await self.async_turn_off()
+        elif hvac_mode == HVACMode.AUTO:
+            await self._coordinator.async_set_control_values({PhilipsApi.OPERATING_MODE: 0})
+            await self.async_turn_on()
+        elif hvac_mode == HVACMode.FAN_ONLY:
+            await self._coordinator.async_set_control_values({PhilipsApi.OPERATING_MODE: -127})
+            await self.async_turn_on()
+        elif hvac_mode == HVACMode.HEAT:
+            # Use configured default heat preset
+            default_preset = self._entry.options.get(CONF_DEFAULT_HEAT_PRESET, DEFAULT_HEAT_PRESET)
+            await self.async_set_preset_mode(default_preset)
+            await self.async_turn_on()
+
+    async def async_set_preset_mode(self, preset_mode: str) -> None:
+        """Set preset mode."""
+        if preset_mode == PRESET_AUTO_PLUS:
+            # Auto+ mode: set to auto and raise target temp by configured offset
+            offset = self._entry.options.get(CONF_AUTO_PLUS_OFFSET, DEFAULT_AUTO_PLUS_OFFSET)
+            current_temp = self.current_temperature
+            if current_temp is not None:
+                target = int(current_temp) + offset
+                target = max(self._attr_min_temp, min(target, self._attr_max_temp))
+                await self._coordinator.async_set_control_values({
+                    PhilipsApi.OPERATING_MODE: 0,  # Auto mode
+                    PhilipsApi.TARGET_TEMP: target,
+                })
+            else:
+                # Fallback to regular auto if no current temperature
+                await self._coordinator.async_set_control_values({PhilipsApi.OPERATING_MODE: 0})
+        elif preset_mode in PRESET_MODES:
+            await self._coordinator.async_set_control_values(PRESET_MODES[preset_mode])
+        else:
+            return
+
+        await self.async_turn_on()
+
+    async def async_set_swing_mode(self, swing_mode: str) -> None:
+        """Set swing mode."""
+        value = self._model_config["oscillation_on"] if swing_mode == SWING_ON else self._model_config["oscillation_off"]
+        await self._coordinator.async_set_control_values({PhilipsApi.OSCILLATION: value})
+
+    async def async_turn_on(self, **kwargs: Any) -> None:
+        """Turn device on."""
+        await self._coordinator.async_set_control_values({PhilipsApi.POWER: 1})
+
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        """Turn device off."""
+        await self._coordinator.async_set_control_values({PhilipsApi.POWER: 0})

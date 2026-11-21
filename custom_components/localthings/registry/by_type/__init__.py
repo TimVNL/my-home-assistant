@@ -1,0 +1,476 @@
+"""Per-device-type registries."""
+
+import re
+from collections.abc import Sequence
+
+from ..capabilities.cook import MODE_HREF, MODE_SPEC, mode_specs, selectable_modes
+from ..entities import PLATFORM_OF
+from . import (
+    air_dresser,
+    air_monitor,
+    air_purifier,
+    airconditioner,
+    cooktop,
+    dehumidifier,
+    dishwasher,
+    dryer,
+    ehs,
+    microfiber_filter,
+    microwave,
+    monitor,
+    oven,
+    range_hood,
+    refrigerator,
+    robot_vacuum,
+    soundbar,
+    tv,
+    vacuum_station,
+    washer,
+    water_purifier,
+)
+from . import (
+    range as _range,
+)
+from ._base import DeviceRegistry
+
+__all__ = [
+    "KEY_PLATFORMS",
+    "WASHER_ONLY_ENTITIES",
+    "DeviceRegistry",
+    "_board_tokens",
+    "for_device_by_model",
+    "for_device_by_oic_type",
+    "for_device_by_resources",
+    "registry_for",
+    "resolve",
+]
+
+
+# One entry per registry, no aliases: every key here is reachable from
+# `_BOARD_TOKEN_TO_KEY`, `_CONSUMER_PREFIX_TO_KEY`, or `for_device_by_resources`.
+_REGISTRY_BY_KEY: dict[str, DeviceRegistry] = {
+    "air_dresser": air_dresser.REGISTRY,
+    "air_monitor": air_monitor.REGISTRY,
+    "air_purifier": air_purifier.REGISTRY,
+    "airconditioner": airconditioner.REGISTRY,
+    "cooktop": cooktop.REGISTRY,
+    "dehumidifier": dehumidifier.REGISTRY,
+    "dishwasher": dishwasher.REGISTRY,
+    "dryer": dryer.REGISTRY,
+    "flexdry": dryer.FLEXDRY_REGISTRY,
+    "ehs": ehs.REGISTRY,
+    "microfiber_filter": microfiber_filter.REGISTRY,
+    "microwave": microwave.REGISTRY,
+    "monitor": monitor.REGISTRY,
+    "oven": oven.REGISTRY,
+    "range": _range.REGISTRY,
+    "range_hood": range_hood.REGISTRY,
+    "refrigerator": refrigerator.REGISTRY,
+    "robot_vacuum": robot_vacuum.REGISTRY,
+    "soundbar": soundbar.REGISTRY,
+    "tv": tv.REGISTRY,
+    "vacuum_station": vacuum_station.REGISTRY,
+    "washer": washer.REGISTRY,
+    "water_purifier": water_purifier.REGISTRY,
+}
+
+
+def _entity_keys(registry: DeviceRegistry) -> set[tuple[str, str]]:
+    caps = [c for cs in registry.capabilities.values() for c in cs]
+    caps += registry.pattern_capabilities
+    return {(PLATFORM_OF[type(desc)], desc.key) for cap in caps for desc in cap.entities}
+
+
+# Old routing gave filters (#475) and oven/microwave cavities (#681) washer entities.
+WASHER_ONLY_ENTITIES = {
+    name: frozenset(_entity_keys(washer.REGISTRY) - _entity_keys(_REGISTRY_BY_KEY[name]))
+    for name in ("microfiber_filter", "oven", "microwave")
+}
+
+
+def _key_platforms() -> dict[str, frozenset[str]]:
+    platforms: dict[str, set[str]] = {}
+    for registry in _REGISTRY_BY_KEY.values():
+        for platform, key in _entity_keys(registry):
+            platforms.setdefault(key, set()).add(platform)
+    return {key: frozenset(found) for key, found in platforms.items()}
+
+
+# Descriptor key -> every platform any registry binds it on, for cleanup.py.
+KEY_PLATFORMS = _key_platforms()
+
+
+# Consumer-model prefix (first two letters of the '_'-delimited token in
+# `description` right before any '/board-info' suffix) -> registry key.
+# NOT derived from `modelNum`: washer and dryer share the same 'DA_WM_'
+# board-family prefix there, and dishwasher's modelNum contains the
+# substring 'WW', so a modelNum-only rule misroutes both.
+_CONSUMER_PREFIX_TO_KEY: dict[str, str] = {
+    "WW": "washer",
+    "WD": "washer",
+    "WF": "washer",
+    "WV": "washer",  # FlexWash twin units (e.g. WV55M9600AW) -- issue #19
+    "WA": "washer",  # Top-load washers (e.g. WA8000T) -- issue #106
+    "DV": "dryer",
+    "DW": "dishwasher",
+}
+
+# These FlexDry sections report a board description rather than a consumer
+# model number. Keep the match exact; a generic TP6X_DRYER description is
+# not enough to identify either section.
+_CONSUMER_DESCRIPTION_TO_KEY: dict[str, str] = {
+    "TP6X_DRYER_DRUM": "flexdry",
+    "TP6X_DRYER_TOPLOAD": "flexdry",
+}
+
+# Board-family token -> registry key, matched against whole tokens of
+# `modelNum`/`description` (see `_board_tokens`).
+#
+# Tokenizing instead of substring-matching keeps this a table rather than a
+# ladder of hand-written rules: Samsung spells the same board family with
+# either delimiter ('TP1X_DA-AC-RAC-01001' vs 'TP2X_RAC_20K', both RAC), so
+# a substring rule would need writing once per spelling, and a token with
+# no trailing delimiter ('ARTIK051_DONGLE_REF') would match neither.
+#
+# Entries must name the specific device type, never the board family that
+# contains it: 'DA-AC-' prefixes RAC/WAC/DHM/AIR alike, so a bare 'AC' entry
+# would swallow the dehumidifier and the air purifier. Where two families
+# genuinely share a resource surface they share a registry (the
+# air-conditioner spellings below), which is a statement about the
+# hardware, not a shortcut.
+_BOARD_TOKEN_TO_KEY: dict[str, str] = {
+    "REF": "refrigerator",
+    # Air conditioners: distinct board families sharing one resource
+    # surface -- room, package, Korean (#136), window (#87), 2-in-1
+    # floor+wall (#150/#153), system/commercial (#52), cassette (#191), and
+    # ARA-WW wall-mount (#115-120).
+    "RAC": "airconditioner",
+    "PRAC": "airconditioner",
+    "KRAC": "airconditioner",
+    "WAC": "airconditioner",
+    "FAC": "airconditioner",
+    "CAWW": "airconditioner",
+    "CAC": "airconditioner",  # issue #191
+    "DUCT": "airconditioner",  # issue #501 -- slim duct
+    "RHS": "airconditioner",  # issue #551 -- AI Air Combo ventilator
+    "ARA": "airconditioner",
+    "DHM": "dehumidifier",  # issue #88 -- target humidity, no climate
+    "EHS": "ehs",  # heat pump: zone1 heating/cooling + domestic hot water
+    "TVTL": "air_purifier",  # issue #56 (ARTIK051)
+    "VTL": "air_purifier",  # issue #608 (TP6X_VTL_16K, 8888)
+    "VTWW": "air_purifier",  # issue #151 (BESPOKE Cube Air)
+    # issue #190: same lineage as VTWW, but the '-WW-' delimiter falls one
+    # letter left ('A-VTWW-' -> 'AVT-WW-'), splitting into a different token.
+    "AVT": "air_purifier",
+    "AIR": "air_purifier",  # issue #130 (TP1X_DA-AC-AIR)
+    "WATERPURIFIER": "water_purifier",  # issue #90
+    "ADW": "dishwasher",
+    # issue #626 -- the microfiber filter, whose /oic/d can answer empty.
+    "AMF": "microfiber_filter",
+    "AHD": "range_hood",
+    "RANGE": "range",  # issue #44 -- cooktop+oven combo
+    "OVEN": "oven",  # issue #55 -- wall oven, no burners
+    "MICROWAVE": "microwave",  # issues #66, #121
+    "COOKTOP": "cooktop",  # issue #86 -- standalone, no oven
+    # Legacy ARTIK051 gas cooktops ('ARTIK051_GB_CT_001'), whose modelNum
+    # carries no COOKTOP token.
+    "CT": "cooktop",
+    "VSKR": "vacuum_station",  # issue #131 -- stick-vacuum clean station
+    "DF": "air_dresser",  # issue #162
+    "VSWW": "vacuum_station",  # issue #219
+    "ASM": "air_monitor",  # issue #210 -- Air Monitor Plus
+}
+
+_TOKEN_SPLIT_RE = re.compile(r"[^A-Z0-9]+")
+
+
+def _board_tokens(value: str, cut_at: str) -> list[str]:
+    """Whole, upper-cased tokens of `value` up to the first `cut_at`.
+
+    `cut_at` drops the trailing junk each field carries -- everything after
+    modelNum's first '|' (a board revision and a capability bitmap, which can
+    contain anything) and after description's first '/' (a '/DC92-...' board
+    part number).
+    """
+    head = (value or "").split(cut_at, 1)[0].upper()
+    return [t for t in _TOKEN_SPLIT_RE.split(head) if t]
+
+
+def _board_family_key(value: str, cut_at: str) -> str | None:
+    """First `_BOARD_TOKEN_TO_KEY` hit among `value`'s tokens, or None.
+
+    No known modelNum or description yields two conflicting board keys, so
+    which token is found first doesn't matter within one field -- the
+    table is a flat lookup, not a priority list.
+
+    One documented exception (issue #196): AILITE water-purifier boards
+    spell their modelNum '...-REF-WATERPURIFIER-...', where 'REF' names
+    the shared cooling-subsystem board, not the refrigerator type --
+    'WATERPURIFIER' is the actual, more specific type. This one known
+    co-occurrence resolves to 'water_purifier'; TestBoardTokenAmbiguity
+    carries a matching carve-out for this exact pair.
+    """
+    tokens = _board_tokens(value, cut_at)
+    if "REF" in tokens and "WATERPURIFIER" in tokens:
+        return "water_purifier"
+    for token in tokens:
+        key = _BOARD_TOKEN_TO_KEY.get(token)
+        if key is not None:
+            return key
+    return None
+
+
+def _consumer_model_key(description: str) -> str | None:
+    """Registry key from the consumer-model token in `description`, or None.
+
+    Usually that token is the last '_'-delimited segment before any
+    '/board-info' suffix (e.g. '..._WW90DG6U25LEU4' -> 'WW90DG6U25LEU4').
+    But issue #79's dryer pairs two model numbers in one description, so
+    the true consumer token sits one segment before the actual last
+    segment -- scan from the end and take the first segment that resolves.
+    Two FlexDry sections have no consumer-model suffix, so their exact
+    descriptions are handled before that scan.
+
+    Splits on '_' only, unlike `_board_tokens` above: widening the split to
+    '-' would start reading board-family segments as consumer models (the
+    dishwasher's 'ADW-WW-RTL-24-AILITE' would offer up a bare 'WW' and
+    route to washer).
+
+    A segment counts only when it carries digits or is a bare two-letter
+    code, so a word such as 'WAC' (Window AC, issue #87) or 'WALL' (#681)
+    never reads as a 'WA' top-load washer (issue #106). This is still the
+    weakest evidence, so for_device_by_model() consults it last.
+    """
+    head = (description or "").split("/", 1)[0]
+    if key := _CONSUMER_DESCRIPTION_TO_KEY.get(head.upper()):
+        return key
+    segments = head.split("_")
+    for segment in reversed(segments):
+        # A consumer model carries digits ('WA8000T'), or is the bare board
+        # code ('DA_DW_TP1_21_COMMON'). A word is neither: the NW9300MD's
+        # 'LCD_OV_WALL_16K_DIV' slot read as a 'WA' washer (#681).
+        if len(segment) != 2 and not any(c.isdigit() for c in segment):
+            continue
+        key = _CONSUMER_PREFIX_TO_KEY.get(segment[:2].upper())
+        if key is not None:
+            return key
+    return None
+
+
+# /oic/d's `rt` (OCF's own device-type declaration, see registry/identity.py)
+# -> registry key. The device naming its own type, no board-part guessing --
+# consulted before modelNum/description.
+#
+# Every value must already be a key in `_REGISTRY_BY_KEY` (checked by
+# `test_every_oic_type_resolves_to_a_real_registry`) -- this deliberately
+# stops short of the full OCF/SmartThings vocabulary, since most of it (lights,
+# locks, cameras, ...) has no registry here to point at, and
+# 'oic.d.robotcleaner' names an actual robot vacuum, a different product from
+# the clean/auto-empty *station* `vacuum_station` covers.
+#
+# `x.com.st.d.*` entries are SmartThings' own vendor extension to the OCF
+# device-type vocabulary, for categories with no `oic.d.*` equivalent.
+_OIC_TYPE_TO_KEY: dict[str, str] = {
+    "oic.d.airconditioner": "airconditioner",
+    "oic.d.airpurifier": "air_purifier",
+    # Both cooktop board generations (issues #86, #508); see by_type/cooktop.py.
+    "oic.d.cooktop": "cooktop",
+    "oic.d.dishwasher": "dishwasher",
+    "oic.d.dryer": "dryer",
+    "oic.d.microwave": "microwave",  # issue #433
+    "oic.d.oven": "oven",
+    "oic.d.range": "range",  # issue #324 -- oven+cooktop combo, no /information/vs/0
+    "oic.d.refrigerator": "refrigerator",
+    # POWERbot R7040 (issue #659): empty modelNum, so /oic/d is its only route.
+    "oic.d.robotcleaner": "robot_vacuum",
+    "oic.d.krefrigerator": "refrigerator",  # issue #328 -- kimchi refrigerator
+    # AV boards report no /information/vs/0, so /oic/d is their only route.
+    "oic.d.networkaudio": "soundbar",
+    "oic.d.tv": "tv",
+    "oic.d.washer": "washer",
+    "x.com.st.d.airqualitysensor": "air_monitor",
+    "x.com.st.d.dehumidifier": "dehumidifier",
+    "x.com.st.d.hood": "range_hood",  # AHD-WW-TP1-22-COMMON
+    # Microfiber laundry-lint filter (AMF-WW-TP1-22-COMMON, issue #475). It
+    # reports washer resources too, but nothing that runs a cycle (#626).
+    "x.com.st.d.microfiberfilter": "microfiber_filter",
+    "x.com.st.d.monitor": "monitor",  # issue #815
+    "x.com.st.d.stickcleaner": "vacuum_station",
+    "x.com.st.d.steamcloset": "air_dresser",
+    "x.com.st.d.winecellar": "refrigerator",  # issue #328 -- same TP1X_REF_21K board
+}
+
+
+def for_device_by_oic_type(device_types: Sequence[str]) -> DeviceRegistry | None:
+    """Device-type detection from /oic/d's `rt` -- OCF's own device-type
+    declaration. The primary path when a dump carries it, since the device
+    names its own type. Most hardware still doesn't populate `/oic/d`
+    usefully, so `for_device_by_model`/`for_device_by_resources` remain
+    load-bearing for everything else.
+    """
+    for device_type in device_types:
+        key = _OIC_TYPE_TO_KEY.get(device_type)
+        if key is not None:
+            return _REGISTRY_BY_KEY[key]
+    return None
+
+
+# The type an 8888 bridge record reports for itself (`deviceSubType`, which
+# legacy_http carries into /information/vs/0) -> registry key. Only the 8888
+# family reports it, so it names the type where `/oic/d` can't: the bridge
+# serves none. `CombiOven` is left out because it covers both the NQ70M6650DS's
+# microwave and the NW9300MD's oven (#674, #681), which the resource
+# signatures tell apart.
+_DEVICE_SUBTYPE_TO_KEY: dict[str, str] = {
+    "Cooktop": "cooktop",
+    "Dryer": "dryer",  # TP6X_DRYER, DV80M8214AW (#636, #646)
+    "Refrigerator": "refrigerator",  # DONGLE_0281, from the record's `type` (#698)
+    "Room_Air_Conditioner": "airconditioner",
+    "WallOven": "oven",
+    "Washer": "washer",  # TP6X_WASHER, WW6500
+}
+
+
+def for_device_by_subtype(subtype: object) -> DeviceRegistry | None:
+    """Device-type detection from an 8888 record's own `deviceSubType`."""
+    key = _DEVICE_SUBTYPE_TO_KEY.get(subtype) if isinstance(subtype, str) else None
+    return _REGISTRY_BY_KEY[key] if key is not None else None
+
+
+_DEFAULT = DeviceRegistry(name="", capabilities={})
+
+
+def registry_for(name: str | None) -> DeviceRegistry:
+    """A family's registry by name, for its settings (subscribe_tiers,
+    write_settle_s, awake_href); an unrecognized device gets the defaults."""
+    return _REGISTRY_BY_KEY.get(name or "", _DEFAULT)
+
+
+def for_device_by_model(model_num: str, description: str) -> DeviceRegistry | None:
+    """Device-type detection from /information/vs/0's model strings.
+
+    The primary path: the board named in `modelNum` determines the resource
+    surface, which is what a registry describes.
+
+    Three passes, narrowest evidence first:
+
+    1. Board-family tokens in `modelNum`. The most reliable signal -- it names
+       the board, which determines the resource surface.
+    2. The same tokens in `description`. Some units carry the board token only
+       there (a scrubbed or placeholder modelNum, e.g. description
+       'TP1X_REF_21K'). This runs second so that a device whose two fields
+       disagree is typed by its modelNum, which names the board.
+    3. The consumer-model prefix in `description` (washer/dryer/dishwasher).
+       Last, because a bare two-letter prefix is the fuzziest evidence here
+       and would otherwise shadow the specific board tokens above.
+
+    Args:
+        model_num: x.com.samsung.da.modelNum from /information/vs/0.
+        description: x.com.samsung.da.description from /information/vs/0.
+
+    Returns:
+        DeviceRegistry if the modelNum or consumer-model code resolves to a
+        known type, None otherwise.
+    """
+    key = (
+        _board_family_key(model_num, "|")
+        or _board_family_key(description, "/")
+        or _consumer_model_key(description)
+    )
+    return _REGISTRY_BY_KEY.get(key) if key else None
+
+
+def for_device_by_resources(resources: dict[str, dict]) -> DeviceRegistry | None:
+    """Detect a device family from a distinctive local-resource signature.
+
+    Runs first as an override path for non-standard devices -- not because
+    resource signatures are more trustworthy than OIC/model metadata, but
+    because it also types boards with no ``/information/vs/0`` at all.
+    Some newer cooktops were the original case: their mode resource still
+    identifies them via a DeviceType option and multiple per-burner
+    OperationState options.
+
+    Every signature here requires two independent shapes, never one, so
+    running this ahead of OIC/model metadata can't let a common resource
+    misclassify an unrelated family.
+    """
+    mode = resources.get("/mode/vs/0", {})
+    options = mode.get("x.com.samsung.da.options") or ()
+    has_device_type = any(
+        isinstance(option, str) and option.startswith("DeviceType_") for option in options
+    )
+    operation_states = sum(
+        1 for option in options if isinstance(option, str) and option.startswith("OperationState")
+    )
+    if has_device_type and operation_states >= 2:
+        return _REGISTRY_BY_KEY["cooktop"]
+    if "/hood/fanspeed/vs/0" in resources and "/hood/lamp/vs/0" in resources:
+        return _REGISTRY_BY_KEY["range_hood"]
+    # Oven/range/microwave boards that report no /information/vs/0 at all
+    # (issues #74, #172) can't be matched via modelNum tokens either. Mode
+    # vocabulary alongside the oven cavity resource (/oven/vs/0) is a safe
+    # two-resource signature; it also corrects Qooker's generic oic.d.oven
+    # metadata (PR #225) since resource detection runs before it.
+    supported_modes = mode.get("x.com.samsung.da.supportedModes") or ()
+    if not isinstance(supported_modes, (list, tuple)):
+        supported_modes = ()
+    # After a Wi-Fi board restart an LCD_R18 microwave lists only
+    # HOMECARE_WIZARD_V2 until its power is cut (#600), and would come up as
+    # an oven (#744). Its modeSpec, live or remembered by the coordinator,
+    # still names the modes. Only that shape: an empty list means something
+    # else on other boards.
+    if supported_modes and not selectable_modes(list(supported_modes)):
+        supported_modes = tuple(mode_specs({MODE_HREF: {MODE_SPEC: mode.get(MODE_SPEC, "[]")}}))
+    cavity = resources.get("/oven/vs/0")
+    if isinstance(cavity, dict):
+        if any(
+            m in supported_modes for m in ("MicroWave", "MicroWaveGrill", "MicroWaveConvection")
+        ):
+            return _REGISTRY_BY_KEY["microwave"]
+        # A Flex Duo's upper cavity offers only Upper* modes while its
+        # divider is in (#572), so any Bake mode counts.
+        if any(isinstance(m, str) and m.endswith("Bake") for m in supported_modes):
+            if "/cooktopmonitoring/vs/0" in resources or "/cooktop/status/vs/0" in resources:
+                return _REGISTRY_BY_KEY["range"]
+            return _REGISTRY_BY_KEY["oven"]
+        # An 8888 lower cavity with its divider out offers only NoOperation;
+        # its /connected/vs/0 is whether the divider is in (#681).
+        if list(supported_modes) == ["NoOperation"] and "/connected/vs/0" in resources:
+            return _REGISTRY_BY_KEY["oven"]
+    return None
+
+
+def resolve(
+    resources: dict[str, dict],
+    device_types: Sequence[str] = (),
+) -> DeviceRegistry | None:
+    """Device type for a parsed /device/0 dump, or None if unrecognized.
+
+    The single entry point for detection -- the coordinator, the config
+    flow's probe and the golden-regression harness all call this, so the
+    order can't drift between what ships and what the tests assert.
+
+    Distinctive resource signatures run first, since they describe the
+    live capability surface a registry must bind; `for_device_by_resources`
+    is deliberately strict (multiple independent details required) so this
+    can correct misleading metadata without a common href overriding an
+    unrelated family. When no signature matches, the type the device names
+    itself -- `/oic/d`'s `rt`, or an 8888 record's `deviceSubType` -- wins
+    over model-string parsing.
+
+    `/otninformation/vs/0`'s oneUiVersion is deliberately not consulted:
+    only a minority of hardware populates it, every device that does is
+    already typed by its modelNum board token, and no device-support issue
+    has ever needed it. Still reported in diagnostics as a firmware
+    marker.
+    """
+    info = resources.get("/information/vs/0", {})
+    return (
+        for_device_by_resources(resources)
+        or for_device_by_oic_type(device_types)
+        or for_device_by_subtype(info.get("x.com.samsung.da.deviceSubType", ""))
+        or for_device_by_model(
+            info.get("x.com.samsung.da.modelNum", ""),
+            info.get("x.com.samsung.da.description", ""),
+        )
+    )

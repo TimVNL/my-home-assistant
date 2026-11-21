@@ -1,0 +1,47 @@
+
+# Core settings and configuration packages (see packages/README.md)
+homeassistant:
+  name: "Home"
+  latitude: !secret latitude
+  longitude: !secret longitude
+  elevation: 0
+  radius: 50
+  time_zone: "Europe/Amsterdam"
+  unit_system: metric
+  packages: !include_dir_named packages
+
+# Loads default set of integrations. Do not remove.
+default_config:
+
+# Load frontend themes from the themes folder
+frontend:
+  themes: !include_dir_merge_named themes
+
+# UI-managed automations stay in automations.yaml; hand-written ones live in
+# automations/*.yaml (see automations/README.md)
+automation ui: !include automations.yaml
+automation manual: !include_dir_merge_list automations/
+script: !include scripts.yaml
+scene: !include scenes.yaml
+
+# Keep the Activity (logbook) panel free of events that carry no information
+logbook:
+  exclude:
+    entities:
+      - binary_sensor.external_doors
+      - sensor.time
+      - sensor.date_time
+    entity_globs:
+      - sensor.sun_next_*
+      - sensor.homelab_*_technitiumdns_*
+
+# Keep 90 days of history, skipping high-churn sources
+recorder:
+  purge_keep_days: 90
+  exclude:
+    entities:
+      - sensor.utility_closet_electricity_meter_power_consumption
+      - sensor.time
+      - sensor.date_time
+    entity_globs:
+      - sensor.homelab_*_technitiumdns_*

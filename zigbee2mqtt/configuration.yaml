@@ -1,0 +1,59 @@
+version: 5
+mqtt:
+  base_topic: zigbee2mqtt
+  server: mqtt://core-mosquitto:1883
+  user: addons
+  password: '!secret.yaml password'
+serial:
+  port: tcp://81bc2df9-hassio-ihost-silabs-multiprotocol:9999
+  adapter: ember
+  baudrate: 115200
+  rtscts: true
+advanced:
+  log_level: info
+  channel: 11
+  network_key: '!secret.yaml network_key'
+  pan_id: 52978
+  ext_pan_id:
+    - 52
+    - 27
+    - 100
+    - 220
+    - 228
+    - 212
+    - 15
+    - 79
+  enable_external_js: false
+frontend:
+  enabled: true
+  port: 8099
+homeassistant:
+  enabled: true
+devices:
+  '0x0017880106a01412':
+    friendly_name: LIVING Sofa
+  '0x00178801061d06a9':
+    friendly_name: LIVING TV
+  '0x001788010efb5612':
+    friendly_name: OFFICE Ultrawide
+  '0x001788010b8a09a8':
+    friendly_name: BEDROOM TV
+  '0x001788010939f0c2':
+    friendly_name: BEDROOM Bedside
+  '0x00158d008b3d7ec3':
+    friendly_name: OFFICE Remote
+  '0x00158d008b35e71c':
+    friendly_name: HALLWAY Remote
+  '0x00158d000706475a':
+    friendly_name: Front Door
+  '0x00158d00083a5f6a':
+    friendly_name: BEDSIDE Remote
+  '0x00158d0006ffda71':
+    friendly_name: Garden Door
+  '0x00158d008b3d7eca':
+    friendly_name: LIVING Remote
+  '0x1cc089fffe14171d':
+    friendly_name: HALLWAY VAC
+groups:
+  '2':
+    friendly_name: living_lights
