@@ -3,6 +3,7 @@ secrets.yaml
 secret.yaml
 *.secrets.yaml
 secrets.*.yaml
+.github_token
 
 # Home Assistant runtime state, databases and logs
 .storage/
